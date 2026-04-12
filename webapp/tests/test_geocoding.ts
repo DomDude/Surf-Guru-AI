@@ -1,4 +1,4 @@
-import { geocodeLocation } from './geocoding';
+import { geocodeLocation } from '../src/tools/geocoding';
 
 async function test() {
     console.log("Testing new Gemini Geocoding Agent...");

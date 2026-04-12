@@ -1,4 +1,4 @@
-import { POST } from "./src/app/api/chat/route";
+import { POST } from "../src/app/api/chat/route";
 import * as dotenv from "dotenv";
 
 dotenv.config({ path: ".env.local" });
@@ -8,7 +8,7 @@ async function run() {
         method: "POST",
         body: JSON.stringify({ location_name: "Beliche" })
     });
-    
+
     console.log("Testing Route Handler Directly...");
     const res = await POST(req);
     const json = await res.json();

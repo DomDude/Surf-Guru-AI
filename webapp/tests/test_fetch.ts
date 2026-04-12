@@ -1,4 +1,4 @@
-import { fetchMarineData } from './fetch_marine_data';
+import { fetchMarineData } from '../src/tools/fetch_marine_data';
 
 async function testCurrentMarine() {
     console.log("Testing current marine data for Pipeline...");

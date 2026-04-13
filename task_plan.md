@@ -52,7 +52,7 @@ Do not touch: anything in `src/tools/`, `src/app/api/`.
 Owns: `webapp/src/tools/fetch_marine_data.ts`, `webapp/src/tools/geocoding.ts`.
 Do not touch: `webapp/src/app/api/chat/route.ts` (that's Track 1C), `webapp/src/app/page.tsx`.
 
-- [ ] **1B.1 Fix the "current conditions" bug** [S]
+- [x] **1B.1 Fix the "current conditions" bug** [S]
   - Problem: `fetch_marine_data.ts:72` uses `forecast_48h[0]` as "current", but with `timezone=auto` that's **local midnight of today**, not now.
   - Fix option A (preferred): add `&current=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction` to `marineUrl` and `&current=wind_speed_10m,wind_direction_10m,temperature_2m` to `weatherUrl`. Parse the `current` object from Open-Meteo's response into a `ForecastPoint`.
   - Fix option B (fallback): compute the current local hour index from the Open-Meteo `utc_offset_seconds` and slice from there.
@@ -60,24 +60,24 @@ Do not touch: `webapp/src/app/api/chat/route.ts` (that's Track 1C), `webapp/src/
   - Write the fix + verification into `findings.md` under "Open-Meteo quirks".
   - Acceptance: `current.time` is within the current hour of the spot's local timezone.
 
-- [ ] **1B.2 Replace `|| 0` fallbacks with null-preserving logic** [S, after 1B.1]
+- [x] **1B.2 Replace `|| 0` fallbacks with null-preserving logic** [S, after 1B.1]
   - Problem: `wave_height[i] || 0` silently renders missing data as a flat ocean.
   - Use `?? null`, propagate nullability through `ForecastPoint` (`wave_height_m: number | null`).
   - Update UI consumers in `page.tsx` (coordinate with Track 1D — or mark the UI side as a known follow-up).
   - Acceptance: if Open-Meteo returns null for a field, the API payload contains `null`, not `0`.
 
-- [ ] **1B.3 Sampling starts from "now", not midnight** [S, after 1B.1]
+- [x] **1B.3 Sampling starts from "now", not midnight** [S, after 1B.1]
   - Problem: `for (let i = 0; i < times.length; i += 3)` starts at index 0 (midnight local). The 48h forecast should start at the current hour and step every 3 hours forward.
   - Compute the `startIdx` from `current.time` or `utc_offset_seconds`.
   - Acceptance: `forecast_48h[0].time` is within the current hour; subsequent entries are +3h, +6h, ….
 
-- [ ] **1B.4 Add Zod schema for Open-Meteo response** [P]
+- [x] **1B.4 Add Zod schema for Open-Meteo response** [P]
   - Add `zod` to `package.json`.
   - Define `MarineApiResponseSchema` and `WeatherApiResponseSchema` that match the real payloads.
   - Parse inside `fetchMarineData` and throw if invalid. Log the Zod error on failure so we learn the real shape.
   - Acceptance: malformed responses throw a typed error instead of crashing downstream.
 
-- [ ] **1B.5 Harden the Gemini-as-geocoder tool** [P]
+- [x] **1B.5 Harden the Gemini-as-geocoder tool** [P]
   - Add Zod validation to the parsed response.
   - Add a coordinate sanity check: lat ∈ [-90, 90], lon ∈ [-180, 180], not (0, 0).
   - Add logging so we can detect bad responses.
@@ -88,29 +88,29 @@ Do not touch: `webapp/src/app/api/chat/route.ts` (that's Track 1C), `webapp/src/
 Owns: `webapp/src/app/api/chat/route.ts`.
 Do not touch: `src/tools/*` (Track 1B), `page.tsx` (Track 1D).
 
-- [ ] **1C.1 Add Zod validation to the request body** [P]
+- [x] **1C.1 Add Zod validation to the request body** [P]
   - Define `ChatRequestSchema` matching `gemini.md` Input Schema.
   - Return 400 with clear error on invalid input.
   - Acceptance: sending `{}` returns 400 with a validation error; sending a valid body succeeds.
 
-- [ ] **1C.2 Remove the hallucinated `tide_trend`** [S]
+- [x] **1C.2 Remove the hallucinated `tide_trend`** [S]
   - Delete `tide_trend` from the Gemini JSON schema in the system prompt (`route.ts:80`).
   - Delete `tide_trend` from the response payload.
   - Coordinate with Track 1D: UI must stop rendering the Tide box (or render "—" until Phase 2 wires a real tide API).
   - Add a `findings.md` note under "Violations caught and fixed".
   - Acceptance: nothing in the response claims a tide time; the tide box is gone or visibly says "coming soon".
 
-- [ ] **1C.3 Typed errors + graceful persona messages** [P, after 1C.1]
+- [x] **1C.3 Typed errors + graceful persona messages** [P, after 1C.1]
   - Replace the catch-all `500 Internal Server Error` with discriminated error types: `GEOCODING_FAILED`, `FORECAST_FAILED`, `LLM_FAILED`, `UNKNOWN`.
   - Each returns a persona-consistent message (see `architecture/blueprint.md` §3 for the examples).
   - Acceptance: forcing a tool failure returns a readable, in-character error.
 
-- [ ] **1C.4 Structured logging** [P]
+- [x] **1C.4 Structured logging** [P]
   - Replace `console.log("--> STEP N: ...")` with a tiny logger helper (`logStep`, `logError`) that prints JSON lines with `traceId`, `step`, `duration_ms`, `spot`.
   - No external lib yet — a 20-line helper in `src/lib/log.ts`.
   - Acceptance: every request in dev prints one structured line per step.
 
-- [ ] **1C.5 Basic rate limiting** [S, after 1C.1]
+- [x] **1C.5 Basic rate limiting** [S, after 1C.1]
   - In-memory token bucket keyed by IP (`src/lib/rate_limit.ts`), 20 req / 5 min per IP.
   - Upgrade to Upstash Redis in Phase 5 when deployed.
   - Acceptance: 21st request from the same IP within 5 min returns 429.

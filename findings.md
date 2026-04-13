@@ -6,18 +6,17 @@
 
 ## Open-Meteo quirks
 
-### The "current conditions" trap
-**Symptom.** `fetchMarineData` treats `hourly[0]` as "current conditions."
+### The "current conditions" trap [resolved]
+**Symptom.** `fetchMarineData` treated `hourly[0]` as "current conditions."
 **Reality.** With `timezone=auto`, Open-Meteo returns `hourly.time[0]` as **local midnight of today**, not "now." So your "current wave height" can be up to 24 hours stale.
-**Fix.** Either (a) use `&current=wave_height,swell_wave_height,...` on the marine endpoint and `&current=wind_speed_10m,...` on the weather endpoint, then parse the returned `current` object; or (b) compute the current-hour index yourself from `utc_offset_seconds`.
-**Status.** Open. Scheduled in Task 1B.1.
-**Why it matters.** This is the most embarrassing bug in the app right now — every "current" reading may be wrong, silently.
+**Fix applied (1B.1).** Add `&current=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction` to the marine URL and `&current=wind_speed_10m,wind_direction_10m,temperature_2m` to the weather URL. The API returns a `current` object with `{ time, interval, <fields> }` where `time` is the actual wall-clock time in the spot's local timezone. We now build `current: ForecastPoint` from that object.
+**Note.** `current.time` aligns to 15-minute intervals (Open-Meteo's native resolution). It is always ≤ now + 15 min. Correct.
 
-### Sampling offset
-Same root cause: `for (let i = 0; i < times.length; i += 3)` in `fetch_marine_data.ts` starts at index 0 (= midnight). The 48h forecast view should start at "now" and step every 3 hours forward. If you fix the current bug, remember to fix the sampling too. Tracked as 1B.3.
+### Sampling offset [resolved]
+Same root cause: `for (let i = 0; i < times.length; i += 3)` started at index 0 (= midnight). Fixed in 1B.3: a `startIdx` search finds the last hourly entry at or before `current.time` (lexicographic ISO-8601 comparison is safe because both strings share the same local timezone offset from `timezone=auto`).
 
-### Missing data as zero
-`wave_height[i] || 0` silently renders nulls as flat water. Use `?? null` and propagate nullability. Tracked as 1B.2.
+### Missing data as zero [resolved]
+`wave_height[i] || 0` silently rendered nulls as flat water. Fixed in 1B.2: all `ForecastPoint` numeric fields are now `number | null`; converters propagate null; `?? null` is used throughout. The payload now honestly contains `null` for absent readings.
 
 ### Marine API does not return wind
 `open-meteo.com/v1/marine` doesn't reliably include wind. You have to hit `api.open-meteo.com/v1/forecast` separately for `wind_speed_10m`, `wind_direction_10m`, `temperature_2m`. We already do this — documented here so nobody "optimizes" by dropping the second call.
@@ -52,8 +51,8 @@ The system prompt tells Gemini "Feet/Knots for USA/Hawaii, Meters/KMH for Europe
 
 *(Append as we fix them. Record the rule, how it was violated, and how we fixed it.)*
 
-- **Hallucinated tide times.** Rule #1 violation in `route.ts:80`. Scheduled fix in Task 1C.2.
-- **"Current" reading is actually midnight.** Violates implicit truthfulness of the `raw_data` block. Scheduled fix in Task 1B.1.
+- **Hallucinated tide times [resolved].** Rule #1 violation — `route.ts` system prompt instructed Gemini to "use your local knowledge to estimate a realistic tide stage." Removed `tide_trend` entirely from the Gemini output schema and from the API payload (Task 1C.2, 2026-04-13). Real tide data scheduled for Phase 2B via a dedicated API.
+- **"Current" reading is actually midnight [resolved].** Violates implicit truthfulness of the `raw_data` block. Fixed in Task 1B.1 (2026-04-13) — switched to the Open-Meteo `current` object; `current.time` now matches real wall-clock time.
 
 ---
 

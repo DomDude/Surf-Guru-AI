@@ -1,16 +1,16 @@
 export interface ForecastPoint {
     time: string;
-    wave_height_m: number;
-    wave_height_ft: number;
-    swell_height_m: number;
-    swell_height_ft: number;
-    swell_period_s: number;
-    swell_direction: number;
-    wind_speed_kmh: number;
-    wind_speed_knots: number;
-    wind_direction: number;
-    temp_c: number;
-    temp_f: number;
+    wave_height_m: number | null;
+    wave_height_ft: number | null;
+    swell_height_m: number | null;
+    swell_height_ft: number | null;
+    swell_period_s: number | null;
+    swell_direction: number | null;
+    wind_speed_kmh: number | null;
+    wind_speed_knots: number | null;
+    wind_direction: number | null;
+    temp_c: number | null;
+    temp_f: number | null;
 }
 
 export interface MarineData {
@@ -37,10 +37,11 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
         const marineData = await marineRes.json();
         const weatherData = await weatherRes.json();
 
-        // Converters
-        const mToFt = (m: number) => parseFloat((m * 3.28084).toFixed(1));
-        const kmhToKnots = (kmh: number) => parseFloat((kmh * 0.539957).toFixed(1));
-        const cToF = (c: number) => parseFloat(((c * 9 / 5) + 32).toFixed(1));
+        // Converters — return null when the source value is null/undefined so missing data
+        // is never silently rendered as zero.
+        const mToFt = (m: number | null): number | null => m === null ? null : parseFloat((m * 3.28084).toFixed(1));
+        const kmhToKnots = (kmh: number | null): number | null => kmh === null ? null : parseFloat((kmh * 0.539957).toFixed(1));
+        const cToF = (c: number | null): number | null => c === null ? null : parseFloat(((c * 9 / 5) + 32).toFixed(1));
 
         // Build true current conditions from the Open-Meteo `current` object (not hourly[0]).
         // The `current` object reflects the actual moment of the request, expressed in the
@@ -49,10 +50,10 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
         const mc = marineData.current;
         const wc = weatherData.current;
 
-        const cWaveM = mc.wave_height || 0;
-        const cSwellM = mc.swell_wave_height || 0;
-        const cWindKmh = wc.wind_speed_10m || 0;
-        const cTempC = wc.temperature_2m || 0;
+        const cWaveM = mc.wave_height ?? null;
+        const cSwellM = mc.swell_wave_height ?? null;
+        const cWindKmh = wc.wind_speed_10m ?? null;
+        const cTempC = wc.temperature_2m ?? null;
 
         const current: ForecastPoint = {
             time: mc.time,
@@ -60,11 +61,11 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
             wave_height_ft: mToFt(cWaveM),
             swell_height_m: cSwellM,
             swell_height_ft: mToFt(cSwellM),
-            swell_period_s: mc.swell_wave_period || 0,
-            swell_direction: mc.swell_wave_direction || 0,
+            swell_period_s: mc.swell_wave_period ?? null,
+            swell_direction: mc.swell_wave_direction ?? null,
             wind_speed_kmh: cWindKmh,
             wind_speed_knots: kmhToKnots(cWindKmh),
-            wind_direction: wc.wind_direction_10m || 0,
+            wind_direction: wc.wind_direction_10m ?? null,
             temp_c: cTempC,
             temp_f: cToF(cTempC)
         };
@@ -74,10 +75,10 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
 
         // Sample every 3 hours to reduce payload size while maintaining forecast accuracy.
         for (let i = 0; i < times.length; i += 3) {
-            const waveM = marineData.hourly.wave_height[i] || 0;
-            const swellM = marineData.hourly.swell_wave_height[i] || 0;
-            const windKmh = weatherData.hourly.wind_speed_10m[i] || 0;
-            const tempC = weatherData.hourly.temperature_2m[i] || 0;
+            const waveM = marineData.hourly.wave_height[i] ?? null;
+            const swellM = marineData.hourly.swell_wave_height[i] ?? null;
+            const windKmh = weatherData.hourly.wind_speed_10m[i] ?? null;
+            const tempC = weatherData.hourly.temperature_2m[i] ?? null;
 
             forecast_48h.push({
                 time: times[i],
@@ -85,11 +86,11 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
                 wave_height_ft: mToFt(waveM),
                 swell_height_m: swellM,
                 swell_height_ft: mToFt(swellM),
-                swell_period_s: marineData.hourly.swell_wave_period[i] || 0,
-                swell_direction: marineData.hourly.swell_wave_direction[i] || 0,
+                swell_period_s: marineData.hourly.swell_wave_period[i] ?? null,
+                swell_direction: marineData.hourly.swell_wave_direction[i] ?? null,
                 wind_speed_kmh: windKmh,
                 wind_speed_knots: kmhToKnots(windKmh),
-                wind_direction: weatherData.hourly.wind_direction_10m[i] || 0,
+                wind_direction: weatherData.hourly.wind_direction_10m[i] ?? null,
                 temp_c: tempC,
                 temp_f: cToF(tempC)
             });

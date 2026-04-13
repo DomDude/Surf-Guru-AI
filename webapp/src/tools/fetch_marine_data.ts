@@ -19,9 +19,9 @@ export interface MarineData {
 }
 
 export async function fetchMarineData(lat: number, lon: number): Promise<MarineData | null> {
-    // Fetch 2 days of hourly data to allow for forecasting "tomorrow"
-    const marineUrl = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&hourly=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction&timezone=auto&forecast_days=2`;
-    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=wind_speed_10m,wind_direction_10m,temperature_2m&timezone=auto&forecast_days=2`;
+    // &current= gives us the true "right now" reading — without it, hourly[0] is local midnight, not now.
+    const marineUrl = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&hourly=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction&current=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction&timezone=auto&forecast_days=2`;
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=wind_speed_10m,wind_direction_10m,temperature_2m&current=wind_speed_10m,wind_direction_10m,temperature_2m&timezone=auto&forecast_days=2`;
 
     try {
         const [marineRes, weatherRes] = await Promise.all([
@@ -42,10 +42,37 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
         const kmhToKnots = (kmh: number) => parseFloat((kmh * 0.539957).toFixed(1));
         const cToF = (c: number) => parseFloat(((c * 9 / 5) + 32).toFixed(1));
 
+        // Build true current conditions from the Open-Meteo `current` object (not hourly[0]).
+        // The `current` object reflects the actual moment of the request, expressed in the
+        // spot's local timezone (timezone=auto). hourly[0] would be local midnight — up to
+        // 24 h stale.
+        const mc = marineData.current;
+        const wc = weatherData.current;
+
+        const cWaveM = mc.wave_height || 0;
+        const cSwellM = mc.swell_wave_height || 0;
+        const cWindKmh = wc.wind_speed_10m || 0;
+        const cTempC = wc.temperature_2m || 0;
+
+        const current: ForecastPoint = {
+            time: mc.time,
+            wave_height_m: cWaveM,
+            wave_height_ft: mToFt(cWaveM),
+            swell_height_m: cSwellM,
+            swell_height_ft: mToFt(cSwellM),
+            swell_period_s: mc.swell_wave_period || 0,
+            swell_direction: mc.swell_wave_direction || 0,
+            wind_speed_kmh: cWindKmh,
+            wind_speed_knots: kmhToKnots(cWindKmh),
+            wind_direction: wc.wind_direction_10m || 0,
+            temp_c: cTempC,
+            temp_f: cToF(cTempC)
+        };
+
         const times = marineData.hourly.time;
         const forecast_48h: ForecastPoint[] = [];
 
-        // We will sample the data every 3 hours to reduce payload size while maintaining forecast accuracy
+        // Sample every 3 hours to reduce payload size while maintaining forecast accuracy.
         for (let i = 0; i < times.length; i += 3) {
             const waveM = marineData.hourly.wave_height[i] || 0;
             const swellM = marineData.hourly.swell_wave_height[i] || 0;
@@ -67,9 +94,6 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
                 temp_f: cToF(tempC)
             });
         }
-
-        // Current is just the first hour of the array (closest to right now in auto timezone)
-        const current = forecast_48h[0];
 
         return {
             current,

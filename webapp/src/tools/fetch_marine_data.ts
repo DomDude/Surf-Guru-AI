@@ -70,11 +70,24 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
             temp_f: cToF(cTempC)
         };
 
-        const times = marineData.hourly.time;
+        const times: string[] = marineData.hourly.time;
         const forecast_48h: ForecastPoint[] = [];
 
+        // Find the first hourly entry that is at or before current.time so that
+        // forecast_48h[0] is the current hour, not local midnight.
+        // Both times are ISO-8601 in the same local timezone (timezone=auto), so
+        // lexicographic comparison is correct.
+        let startIdx = 0;
+        for (let i = 0; i < times.length; i++) {
+            if (times[i] <= mc.time) {
+                startIdx = i;
+            } else {
+                break;
+            }
+        }
+
         // Sample every 3 hours to reduce payload size while maintaining forecast accuracy.
-        for (let i = 0; i < times.length; i += 3) {
+        for (let i = startIdx; i < times.length; i += 3) {
             const waveM = marineData.hourly.wave_height[i] ?? null;
             const swellM = marineData.hourly.swell_wave_height[i] ?? null;
             const windKmh = weatherData.hourly.wind_speed_10m[i] ?? null;

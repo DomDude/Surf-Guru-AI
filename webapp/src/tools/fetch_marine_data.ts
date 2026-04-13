@@ -1,3 +1,53 @@
+import { z } from 'zod';
+
+// --- Zod schemas for Open-Meteo responses ---
+// Both endpoints return an optional `current` block plus an `hourly` block.
+// Fields can be null when data is unavailable for a given location / time.
+
+const NullableNum = z.number().nullable();
+
+const MarineCurrentSchema = z.object({
+    time: z.string(),
+    interval: z.number(),
+    wave_height: NullableNum,
+    swell_wave_height: NullableNum,
+    swell_wave_period: NullableNum,
+    swell_wave_direction: NullableNum,
+});
+
+const MarineHourlySchema = z.object({
+    time: z.array(z.string()),
+    wave_height: z.array(NullableNum),
+    swell_wave_height: z.array(NullableNum),
+    swell_wave_period: z.array(NullableNum),
+    swell_wave_direction: z.array(NullableNum),
+});
+
+const MarineApiResponseSchema = z.object({
+    current: MarineCurrentSchema,
+    hourly: MarineHourlySchema,
+});
+
+const WeatherCurrentSchema = z.object({
+    time: z.string(),
+    interval: z.number(),
+    wind_speed_10m: NullableNum,
+    wind_direction_10m: NullableNum,
+    temperature_2m: NullableNum,
+});
+
+const WeatherHourlySchema = z.object({
+    time: z.array(z.string()),
+    wind_speed_10m: z.array(NullableNum),
+    wind_direction_10m: z.array(NullableNum),
+    temperature_2m: z.array(NullableNum),
+});
+
+const WeatherApiResponseSchema = z.object({
+    current: WeatherCurrentSchema,
+    hourly: WeatherHourlySchema,
+});
+
 export interface ForecastPoint {
     time: string;
     wave_height_m: number | null;
@@ -34,8 +84,10 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
             return null;
         }
 
-        const marineData = await marineRes.json();
-        const weatherData = await weatherRes.json();
+        // Parse and validate — throws ZodError if Open-Meteo changes shape.
+        // The error is caught below and logged with full context.
+        const marineData = MarineApiResponseSchema.parse(await marineRes.json());
+        const weatherData = WeatherApiResponseSchema.parse(await weatherRes.json());
 
         // Converters — return null when the source value is null/undefined so missing data
         // is never silently rendered as zero.
@@ -114,7 +166,9 @@ export async function fetchMarineData(lat: number, lon: number): Promise<MarineD
             forecast_48h
         };
     } catch (err) {
-        console.error("Fetch marine data error:", err);
+        // ZodError means Open-Meteo changed its response shape — log the issues so
+        // we learn the new schema instead of silently returning nothing.
+        console.error("fetchMarineData error:", JSON.stringify(err, null, 2));
         return null;
     }
 }

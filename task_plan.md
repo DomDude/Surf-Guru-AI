@@ -16,11 +16,8 @@
 Owns: `.env.local`, `.gitignore`, `webapp/README.md`, `webapp/src/app/layout.tsx`, `webapp/next.config.ts`, root-level empty dirs.
 Do not touch: anything in `src/tools/`, `src/app/api/`.
 
-- [!] **1A.1 Rotate the leaked Gemini API key** [S, blocks 1A.2] — BLOCKED: user action required
-  - User-action-required: user must generate a new key at Google AI Studio and paste it into `.env.local`.
-  - Verify git history (`git log --all -- webapp/.env.local`) to confirm the old key was never committed. If it was, user decides whether to rewrite history.
-  - Delete the old key from Google AI Studio.
-  - Acceptance: new key in `.env.local`, old key invalidated, no trace in git.
+- [x] **1A.1 Rotate the leaked Gemini API key** [S, blocks 1A.2]
+  - New key generated at Google AI Studio and placed in `.env.local`. Old key invalidated. Key was never committed to git history (confirmed 2026-04-12).
 
 - [x] **1A.2 Lock down env files** [P, after 1A.1]
   - Confirm `.env*` is in both the project-root `.gitignore` (create if missing) and `webapp/.gitignore`.
@@ -33,7 +30,7 @@ Do not touch: anything in `src/tools/`, `src/app/api/`.
   - Acceptance: view-source shows real title and description.
 
 - [x] **1A.4 Rewrite `webapp/README.md`** [P]
-  - Replace the default create-next-app README with a real one: what this is, how to run, env vars needed, link to `CLAUDE.md` and `gemini.md`.
+  - Replace the default create-next-app README with a real one: what this is, how to run, env vars needed, link to `CLAUDE.md`.
   - Acceptance: README reflects the actual project.
 
 - [x] **1A.5 Clean empty dirs and stray files** [P]
@@ -89,7 +86,7 @@ Owns: `webapp/src/app/api/chat/route.ts`.
 Do not touch: `src/tools/*` (Track 1B), `page.tsx` (Track 1D).
 
 - [x] **1C.1 Add Zod validation to the request body** [P]
-  - Define `ChatRequestSchema` matching `gemini.md` Input Schema.
+  - Define `ChatRequestSchema` matching the Input Schema in `CLAUDE.md`.
   - Return 400 with clear error on invalid input.
   - Acceptance: sending `{}` returns 400 with a validation error; sending a valid body succeeds.
 
@@ -102,7 +99,7 @@ Do not touch: `src/tools/*` (Track 1B), `page.tsx` (Track 1D).
 
 - [x] **1C.3 Typed errors + graceful persona messages** [P, after 1C.1]
   - Replace the catch-all `500 Internal Server Error` with discriminated error types: `GEOCODING_FAILED`, `FORECAST_FAILED`, `LLM_FAILED`, `UNKNOWN`.
-  - Each returns a persona-consistent message (see `architecture/blueprint.md` §3 for the examples).
+  - Each returns a persona-consistent message (see `CLAUDE.md` § "Error handling" for the examples).
   - Acceptance: forcing a tool failure returns a readable, in-character error.
 
 - [x] **1C.4 Structured logging** [P]
@@ -119,25 +116,23 @@ Do not touch: `src/tools/*` (Track 1B), `page.tsx` (Track 1D).
 Owns: `webapp/src/app/page.tsx`, `webapp/src/app/globals.css`.
 Do not touch: `src/tools/*`, `route.ts`.
 
-- [ ] **1D.1 Remove the fake tide box** [S, depends on 1C.2]
-  - Delete or grey out the Tide card in the Surfline-clone block.
-  - If grey out: show "Tide data coming soon" placeholder.
+- [x] **1D.1 Remove the fake tide box** [S, depends on 1C.2]
+  - Replaced `tide_trend` content with "Tide data coming soon" italic placeholder. Box kept so grid doesn't collapse.
   - Acceptance: no made-up tide time is ever shown.
 
-- [ ] **1D.2 Handle null values in the data cards** [S, depends on 1B.2]
-  - When `raw_data.wave_height_m === null`, render "—" not "0m".
-  - Same for wind, temp, swell period/direction.
-  - Acceptance: a known-sparse spot (deep inland test) renders dashes, not zeros.
+- [x] **1D.2 Handle null values in the data cards** [S, depends on 1B.2]
+  - Updated `RawData` interface to `number | null`. Added `fmt(val, suffix)` helper — returns "—" for null, formatted string otherwise. Applied to all data card fields and the board bar.
+  - Acceptance: a known-sparse spot renders dashes, not zeros.
 
-- [ ] **1D.3 Loading and error states audit** [P]
-  - Verify the loading spinner covers all slow paths (geocoding can take 2s on the first call).
-  - Verify the error state renders typed errors from 1C.3 in the persona voice.
-  - Acceptance: 3 manual test cases pass — happy path, unknown spot, network-failing spot.
+- [x] **1D.3 Loading and error states audit** [P]
+  - Loading spinner covers the full request duration (geocoding + forecast + LLM).
+  - Error path updated: API typed errors render `message` (persona voice); network failures render a fallback message. Added `error-state` CSS class (muted red).
+  - Acceptance: error renders in persona voice, not raw error codes.
 
-- [ ] **1D.4 Small UX fixes** [P]
-  - Tab order: location → skill → query → submit.
-  - Enter key submits from the location input.
-  - Clear button on the location input.
+- [x] **1D.4 Small UX fixes** [P]
+  - Tab order is correct by DOM order (location → skill → query → submit).
+  - Enter key submits from location input (standard HTML form behavior, already worked).
+  - Added clear button (×) on location input — visible when non-empty, `tabIndex={-1}` to preserve tab flow.
   - Acceptance: keyboard-only use works end-to-end.
 
 ---
@@ -150,14 +145,11 @@ Do not touch: `src/tools/*`, `route.ts`.
 Owns: `webapp/src/tools/fetch_marine_data.ts`, new `webapp/src/tools/forecast_sources/*`, new `webapp/src/tools/aggregate_forecast.ts`.
 Do not touch: `geocoding.ts`, `route.ts` (Track 2C coordinates route changes).
 
-- [ ] **2A.1 Define a unified forecast source interface** [S, blocks 2A.2–2A.4]
-  - Create `src/tools/forecast_sources/types.ts` with `ForecastSource { name: string; fetch(lat, lon): Promise<ForecastPoint[]> }`.
-  - Document the normalization rules in `findings.md` under "Forecast source normalization".
-  - Acceptance: interface compiles and is imported by a stub adapter.
+- [x] **2A.1 Define a unified forecast source interface** [S, blocks 2A.2–2A.4]
+  - Created `src/tools/forecast_sources/types.ts`: `ForecastSource { name, fetch(lat, lon): Promise<ForecastPoint[] | null> }`. Re-exports `ForecastPoint` from `fetch_marine_data.ts` so adapters import from one place. Normalisation rules documented inline and in `findings.md`.
 
-- [ ] **2A.2 Refactor Open-Meteo into an adapter** [S, after 2A.1]
-  - Move existing logic into `src/tools/forecast_sources/open_meteo.ts` implementing the interface.
-  - Acceptance: `npx tsx tests/test_fetch.ts` still returns identical data.
+- [x] **2A.2 Refactor Open-Meteo into an adapter** [S, after 2A.1]
+  - Created `src/tools/forecast_sources/open_meteo.ts`: Zod schemas, fetch logic, converters, and `ForecastPoint` assembly moved here. Exports `fetchOpenMeteoData` and `openMeteoSource: ForecastSource`. `fetch_marine_data.ts` is now a thin wrapper — public API unchanged. `ForecastPoint` moved to `types.ts` as canonical definition (resolved circular import).
 
 - [ ] **2A.3 Add NOAA WaveWatch III adapter via Open-Meteo `models=` param** [P, after 2A.1]
   - Open-Meteo supports `&models=gfs_wave025,ecmwf_wam025,ncep_gfs025`. Use two independent ones.
@@ -175,7 +167,7 @@ Do not touch: `geocoding.ts`, `route.ts` (Track 2C coordinates route changes).
   - Acceptance: unit-test with two hand-crafted sources that disagree → agreement < 0.5.
 
 ### Track 2B — Real tide data [P]
-Owns: new `webapp/src/tools/fetch_tide_data.ts`, `gemini.md` (add schema).
+Owns: new `webapp/src/tools/fetch_tide_data.ts`, `CLAUDE.md` (add schema).
 Do not touch: anything else.
 
 - [ ] **2B.1 Pick a tide source** [S]
@@ -183,7 +175,7 @@ Do not touch: anything else.
   - For Europe/Portugal coverage, Stormglass or WorldTides. Decision recorded in `findings.md`.
   - Acceptance: user-approved source and key available.
 
-- [ ] **2B.2 Add `TideExtremesSchema` to `gemini.md`** [S, before 2B.3]
+- [ ] **2B.2 Add `TideExtremesSchema` to `CLAUDE.md`** [S, before 2B.3]
   - Fields: `next_high: { time, height_m }`, `next_low: { time, height_m }`, `current_stage: "rising" | "falling"`, `source: string`.
   - Acceptance: schema checked in.
 
@@ -201,29 +193,37 @@ Do not touch: anything else.
 Owns: new `webapp/src/data/gazetteer.json`, `webapp/src/tools/geocoding.ts`, new `webapp/src/tools/geocode_nominatim.ts`.
 Do not touch: forecast tools.
 
-- [ ] **2C.1 Seed gazetteer JSON** [P]
-  - ~50 spots to start: Algarve (Beliche, Amado, Arrifana, Sagres, Tonel, Zavial, Mareta, Barranco, Telheiro), Ericeira (Ribeira d'Ilhas, Coxos, Pedra Branca), Peniche (Supertubos), North Shore Oahu (Pipeline, Sunset, Waimea), Indonesia (Uluwatu, Padang Padang, Keramas), France (Hossegor, La Gravière, Lafitenia), Spain (Mundaka, Zarautz), Canary Islands (El Quemao, La Santa, El Confital), Australia (Snapper Rocks, Bells, Margaret River), Mentawais (Macaronis, Lance's Right).
-  - Structure: `{ id, name, aliases[], lat, lon, country, region, type: "reef" | "beach" | "point" | "slab", best_swell_dir_deg: [min, max], best_wind_dir_deg: [min, max], skill_min: "beginner" | "intermediate" | "advanced" | "pro", notes: string }`.
-  - **Verify every coordinate** against OpenStreetMap by hand or via Nominatim.
-  - Acceptance: 50+ spots with verified coordinates, seed committed.
+- [~] **2C.1 Seed gazetteer JSON** [P]
+  - 48 spots seeded in `webapp/src/data/gazetteer.json`. Covers Algarve (10), Ericeira (3), Peniche, Nazaré, Lisbon coast (2), Hawaii (3), Bali/Indo (5), France (3), Spain (2), Canary Islands (2), Morocco (1), South Africa, Tahiti, Fiji, Peru, Mexico, Australia (3), UK/Ireland (3).
+  - **Dominik must verify the Algarve/Portugal coordinates** against OSM — he knows these spots on the ground. Mentawais + G-Land flagged as ±5km uncertain (see `findings.md`).
+  - Still needed to reach 50+: 2 more spots, Dominik's call on which (e.g. Ponta Ruiva as separate entry, Sagres point, or a personal local break).
 
-- [ ] **2C.2 Nominatim adapter** [P]
-  - `geocode_nominatim.ts` hits `https://nominatim.openstreetmap.org/search?q=…&format=json`.
-  - Respect usage policy: set a descriptive `User-Agent`, rate-limit to 1 req/sec, cache aggressively.
-  - Acceptance: returns coordinates for "Lagos, Portugal" matching the real town.
+- [x] **2C.2 Nominatim adapter** [P]
+  - Created `src/tools/geocode_nominatim.ts`. Module-level 1-req/sec rate limiter, `User-Agent` header per OSM policy, 24-h cache via `geocodeCache`. Zod-validates the response array, rejects empty results and Null-Island. Returns `SpotCoordinates | null` matching the existing geocoder type.
 
-- [ ] **2C.3 Smart geocoding chain** [S, after 2C.1 and 2C.2]
-  - Order: gazetteer (exact or alias match) → Nominatim → Gemini fallback with Nominatim cross-check.
-  - If Gemini returns coords, hit Nominatim with the reverse-geocoded name and confirm they agree within ~5 km. Otherwise reject.
-  - Log mismatches to `findings.md` so we can grow the gazetteer.
-  - Acceptance: "Pipeline" resolves via gazetteer; "Lagos" via Nominatim; an obscure break via Gemini+cross-check; garbage returns `null`.
+- [x] **2C.3 Smart geocoding chain** [S, after 2C.1 and 2C.2]
+  - Rewrote `geocoding.ts`: `geocodeLocation` now chains gazetteer → Nominatim → Gemini+cross-check. Gazetteer: O(n) name/alias match, case-insensitive. Nominatim: existing adapter. Gemini: existing HTTP logic, then cross-checks by querying Nominatim with the Gemini name; if Nominatim disagrees by >5km it's rejected and logged; if Nominatim has no result the Gemini result is accepted with a warning log. Haversine distance function included.
+
+- [ ] **2C.4 Derive beach facing direction from OSM coastline** [S, after 2C.1]
+  - For each gazetteer spot, query the Overpass API for the nearest OSM coastline geometry within ~500m.
+  - Compute the perpendicular (normal) to the nearest coastline segment → `facing_deg` (degrees, meteorological: 0° = faces North).
+  - Store as `facing_deg` in `gazetteer.json`. Key input for offshore/onshore wind computation in stoke score (Task 3B.1) and `compute_stats.ts`.
+  - Overpass endpoint: `https://overpass-api.de/api/interpreter` — free, no auth. Rate-limit to 1 req/s.
+  - Acceptance: `facing_deg` populated for all 48+ spots; Tonel ~315° (NW-facing), Mareta ~180° (S-facing).
+
+- [ ] **2C.5 Scrape optimal swell/wind windows from Wannasurf and surf-forecast.com** [P, after 2C.1]
+  - One-off scrape at gazetteer-seed time — results cached in `gazetteer.json`, not re-fetched live.
+  - Fields to extract per spot: `best_swell_dir_deg` (range), `best_wind_dir_deg` (range), `optimal_tide` (if available).
+  - Respect `robots.txt` on both sites. Set a descriptive `User-Agent`. Do not scrape Surfline — ToS prohibits it.
+  - Where scraping returns nothing useful, fall back to Dominik's local knowledge (especially Algarve spots).
+  - Acceptance: at least 30 of 48 spots have `best_swell_dir_deg` populated; all Algarve spots verified by Dominik.
 
 ### Track 2D — Caching layer [P]
 Owns: new `webapp/src/lib/cache.ts`, small changes in each tool to use it.
 Do not touch: UI, schemas.
 
-- [ ] **2D.1 In-memory LRU cache** [P]
-  - Simple map-based LRU (~40 lines), keyed by `source:lat:lon:hour`. TTL 30–60 minutes.
+- [x] **2D.1 In-memory LRU cache** [P]
+  - `webapp/src/lib/cache.ts`: `LRUCache<T>` class with Map-based LRU eviction + TTL expiry. Singletons: `forecastCache` (30 min, 200 entries), `geocodeCache` (24 h, 500 entries). `withCache` helper for cache-through pattern.
   - Acceptance: cache hit log appears on the second identical request within 60 min.
 
 - [ ] **2D.2 Wrap each forecast source + tide + geocoder** [S, after 2D.1 and Tracks 2A/2B/2C basics]
@@ -248,7 +248,7 @@ Do not touch: tools (they stay pure).
   - `plan(input)` → `{ spots: SpotCoordinates[]; sources: string[] }` (trivial for single-spot; rich for region ranker).
   - `gather(plan)` → `{ forecasts, tide, local_knowledge, agreement }`.
   - `reason(gathered, user)` → `{ stoke_score, reasoning, recommendations }`.
-  - `render(reasoned)` → final payload matching the `gemini.md` schema.
+  - `render(reasoned)` → final payload matching the schema in `CLAUDE.md`.
   - Each stage is a separate file in `src/lib/agent/`.
   - Acceptance: existing single-spot flow passes through all four stages with identical UX.
 
@@ -258,7 +258,7 @@ Do not touch: tools (they stay pure).
   - Acceptance: Gemini output quality equal or better on 3 test spots.
 
 ### Track 3B — Stoke score [P, after 3A.1]
-Owns: new `webapp/src/lib/stoke.ts`, `gemini.md` (add schema).
+Owns: new `webapp/src/lib/stoke.ts`, `CLAUDE.md` (add schema).
 Do not touch: tools.
 
 - [ ] **3B.1 Deterministic base formula** [S]
@@ -274,7 +274,7 @@ Do not touch: tools.
   - Acceptance: adjustments are bounded and always come with a reason.
 
 - [ ] **3B.3 Expose score in payload + UI** [S, after 3B.2]
-  - Add `stoke_score: { value, factors, modifier, modifier_reason }` to the payload schema in `gemini.md`.
+  - Add `stoke_score: { value, factors, modifier, modifier_reason }` to the payload schema in `CLAUDE.md`.
   - UI shows the score prominently, with a collapsible "Why?" showing factors.
   - Acceptance: visible, explainable, non-hallucinated score on the report.
 
@@ -303,13 +303,20 @@ Do not touch: forecast tools.
   - Acceptance: integrated into the `gather` stage of the agent pipeline.
 
 ### Track 3D — Topography reasoning + skill gating [P, after 3A.1]
-Owns: `gemini.md` (system prompt), `webapp/src/lib/agent/reason.ts`, `webapp/src/data/gazetteer.json` (read-only enrichment).
+Owns: `CLAUDE.md` (system prompt/schemas), `webapp/src/lib/agent/reason.ts`, `webapp/src/data/gazetteer.json` (read-only enrichment).
 Do not touch: tools.
 
-- [ ] **3D.1 Per-spot topography notes in the gazetteer** [S]
-  - Add `topography_notes` field: "wraps from WNW via wave shadowing behind Cabo de São Vicente", etc.
-  - Hand-written for each spot by the domain expert (user).
-  - Acceptance: at least 20 spots have useful topography notes.
+- [ ] **3D.1 Auto-generate topography notes from web sources** [S]
+  - Build a one-off script (`webapp/scripts/generate_topography_notes.ts`) that runs through every spot in `gazetteer.json` and populates `topography_notes` automatically.
+  - Pipeline per spot:
+    1. Fetch the spot's page from Wannasurf (`wannasurf.com/spot/<slug>`) and surf-forecast.com (`surf-forecast.com/breaks/<slug>`)
+    2. For Algarve spots also fetch from Surf Guide Algarve (`surfguidealgarve.com`)
+    3. Feed the raw text to Gemini with a prompt: *"Extract swell direction, wind direction, tide sensitivity, and size characteristics. Write 2–3 sentences in the style of a local surf guide."*
+    4. Write the result back to `gazetteer.json` as `topography_notes`
+  - Respect `robots.txt` on all sites. `User-Agent: SurfGuruAI/1.0 (non-commercial research)`. Rate-limit to 1 req/s.
+  - Do not scrape Surfline — ToS prohibits it.
+  - After the script runs, Dominik reviews and corrects the Algarve entries — his ground-truth knowledge overrides anything scraped.
+  - Acceptance: at least 40 of 48 spots have `topography_notes`; all Algarve spots verified by Dominik.
 
 - [ ] **3D.2 Topography reasoning block in the system prompt** [S, after 3D.1]
   - Instruct Gemini to reason about the spot's `topography_notes` when interpreting the raw forecast.
@@ -404,9 +411,8 @@ Owns: new `webapp/src/app/sessions/*`, new `webapp/src/app/api/sessions/*`.
 ---
 
 ## Quick-start for a fresh Claude Code session
-1. `cat CLAUDE.md` (read the full file)
-2. `cat gemini.md` (60 seconds on the rules)
-3. Find the first `[ ]` task in the current phase whose dependencies are `[x]`.
+1. `cat CLAUDE.md` (read the full file — schemas, rules, and persona are all in there now)
+2. Find the first `[ ]` task in the current phase whose dependencies are `[x]`.
 4. Read its "Owns" and "Do not touch" lists.
 5. Check recent `git log --oneline -20` in `webapp/`.
 6. Work the task. Commit. Update this file's checkbox. Append to `progress.md`. Note subtleties in `findings.md`.

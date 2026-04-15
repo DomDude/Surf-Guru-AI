@@ -127,6 +127,33 @@ h4 {
   margin-bottom: 1.5rem;
 }
 
+.input-with-clear {
+  position: relative;
+}
+
+.input-with-clear .input-field {
+  padding-right: 2.5rem;
+}
+
+.clear-btn {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  transition: color 0.2s ease;
+}
+
+.clear-btn:hover {
+  color: var(--text-primary);
+}
+
 .input-label {
   display: block;
   font-size: 0.85rem;
@@ -312,12 +339,11 @@ h4 {
   margin-top: 6px;
 }
 
-.sl-tide-val {
-  font-size: 2.2rem;
-  font-weight: 800;
-  color: #111111;
-  line-height: 1.1;
-  letter-spacing: -1px;
+.sl-tide-coming-soon {
+  font-size: 0.8rem;
+  color: #aaaaaa;
+  font-style: italic;
+  margin-top: 4px;
 }
 
 .sl-temp-row {
@@ -441,4 +467,8 @@ h4 {
   font-family: var(--font-serif);
   font-size: 1.2rem;
   min-height: 300px;
+}
+
+.error-state {
+  color: #ff8080;
 }

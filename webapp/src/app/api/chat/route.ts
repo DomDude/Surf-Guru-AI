@@ -1,141 +1,236 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import { geocodeLocation } from '@/tools/geocoding';
 import { fetchMarineData } from '@/tools/fetch_marine_data';
+import { computeStats } from '@/tools/compute_stats';
+import { logStep, logError } from '@/lib/log';
+import { checkRateLimit, retryAfterSeconds } from '@/lib/rate_limit';
+import { randomUUID } from 'crypto';
 
-// Keep this deterministic and edge-friendly.
+// Keep this deterministic and Node-only (fs/sqlite coming in Phase 3).
 export const runtime = 'nodejs';
 
-export async function POST(req: Request) {
-    try {
-        const { location_name, user_query, skill_level = 'intermediate' } = await req.json();
+// ---------------------------------------------------------------------------
+// 1C.1 — Request body validation (Task 1C.1)
+// Matches the Input Schema defined in gemini.md.
+// ---------------------------------------------------------------------------
 
-        if (!location_name) {
-            return NextResponse.json({ error: "No location provided." }, { status: 400 });
-        }
+const ChatRequestSchema = z.object({
+  location_name: z.string().min(1, 'location_name is required'),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+  user_query: z.string().optional().default(''),
+  skill_level: z.enum(['beginner', 'intermediate', 'advanced']).optional().default('intermediate'),
+});
 
-        // Step 1: Geocode
-        console.log("--> STEP 1: Geocoding Location:", location_name);
-        const coords = await geocodeLocation(location_name);
-        console.log("--> GEOCODE RESULT:", coords);
+type ChatRequest = z.infer<typeof ChatRequestSchema>;
 
-        if (!coords) {
-            return NextResponse.json({
-                forecast_report: "Sorry bro, I couldn't find that spot right now. Can you be more specific on the location?",
-                spot_info: { name: location_name, coordinates: null },
-                raw_data: null,
-                debug: "Geocoding returned null"
-            });
-        }
+// ---------------------------------------------------------------------------
+// 1C.3 — Discriminated error types (Task 1C.3)
+// ---------------------------------------------------------------------------
 
-        // Step 2: Fetch Marine Data
-        console.log("--> STEP 2: Fetching Marine Data for:", coords.latitude, coords.longitude);
-        const marineData = await fetchMarineData(coords.latitude, coords.longitude);
-        console.log("--> MARINE DATA RETURNED:", marineData ? "YES" : "NO");
+type ErrorCode = 'GEOCODING_FAILED' | 'FORECAST_FAILED' | 'LLM_FAILED' | 'UNKNOWN';
 
-        if (!marineData) {
-            return NextResponse.json({
-                forecast_report: "Looks like the buoys are down right now, getting no signal out there. Try again later, mate.",
-                spot_info: coords,
-                raw_data: null,
-                debug: "fetchMarineData returned null"
-            });
-        }
+const ERROR_MESSAGES: Record<ErrorCode, string> = {
+  GEOCODING_FAILED:
+    "Sorry bro, couldn't track that spot down. Double-check the name or try a nearby town — sometimes the obscure ones need a hint.",
+  FORECAST_FAILED:
+    "Looks like the buoys are down right now, getting no signal out there. Try again in a bit, the ocean will still be there.",
+  LLM_FAILED:
+    "The AI guide went quiet on me. Data came through clean — must be a gremlin in the radio. Give it another go.",
+  UNKNOWN:
+    "Something went sideways on our end. The waves are still there; we just can't see them right now. Try again shortly.",
+};
 
-        // Step 3: Call Gemini API
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-            return NextResponse.json({ error: "Server config error: missing API key." }, { status: 500 });
-        }
-
-        const ai = new GoogleGenAI({ apiKey });
-
-        // The Persona Prompts based on gemini.md rules.
-        const systemPrompt = `
-You are an expert local Surf Guide. You know everything about surfing, global surf spots (even secret ones), and local conditions. 
-You are a top specialist in Portugal, specifically the Algarve region (e.g., Sagres, Lagos, Arrifana) and you know all the secret spots there.
-Your tone is authentic, experienced, local surfer.
-Write a detailed 'Surf Forecast Report' analyzing the wave height, swell direction, wind, and period.
-You are talking to an ${skill_level} surfer. Give them a precise recommendation.
-
-CRITICAL PORTUGAL RULES:
-- If the user asks for a spot in Portugal (especially the Algarve/Sagres) or asks for recommendations, DO NOT just give data for that one spot. Actively suggest and compare other spots within a 15 to 20 minute driving distance.
-- You MUST consider and mention the specific coastlines around Sagres:
-  - West Coast spots (e.g., Praia do Telheiro, Praia da Ponta Ruiva, Praia do Tonel) which pick up more swell.
-  - South Coast spots (e.g., Praia do Barranco, Mareta, Zavial) which are more sheltered.
-- Compare the swell size and conditions accurately as if you were reading Surfline's multi-day forecast.
-
-CRITICAL REPORTING RULES:
-- NEVER hallucinate the forecast. ONLY use the API data provided below.
-- Format your response in clean Markdown.
-- Keep it stoked but honest. If it's flat, say it's flat. If it's blown out, say it's blown out.
-- Use localized measurement units (e.g., use Feet/Knots for USA/Hawaii, use Meters/KMH for Europe/Australia).
-
-JSON SCHEMA REQUIREMENT:
-You MUST output ONLY valid JSON using the following structure. Do not output markdown code blocks (\`\`\`json) outside the JSON, just the raw JSON object itself.
-{
-  "condition_rating": "string (e.g., 'POOR', 'FAIR', 'GOOD', 'EPIC')",
-  "condition_color": "string (e.g., '#E5A93D' for FAIR, '#00C851' for GOOD, '#ff4444' for POOR, '#33b5e5' for EPIC)",
-  "surf_height_human": "string (e.g., 'Chest to head high', 'Knee high', 'Overhead')",
-  "tide_trend": "string (Use your local knowledge to estimate a realistic tide stage, e.g., 'Rising - Next High at 1:20pm')",
-  "wind_trend": "string (e.g., 'Offshore', 'Onshore', 'Cross-shore')",
-  "wetsuit_rec": "string (e.g., '3/2mm wetsuit', 'Boardshorts', '4/3mm + booties')",
-  "board_rec": "string (e.g., 'Ride an all-rounder', 'Bring the step-up', 'Log day')",
-  "forecast_report": "string (Your detailed markdown report here)"
+function errorResponse(code: ErrorCode, status: number, traceId: string) {
+  return NextResponse.json(
+    {
+      error: code,
+      message: ERROR_MESSAGES[code],
+      traceId,
+    },
+    { status }
+  );
 }
 
-API DATA RECEIVED:
-Location: ${coords.name}
+// ---------------------------------------------------------------------------
+// Route handler
+// ---------------------------------------------------------------------------
 
-48-HOUR FORECAST DATA (In 3-Hour Increments):
+export async function POST(req: NextRequest) {
+  const traceId = randomUUID();
+
+  // --- Rate limiting (Task 1C.5) ---
+  const ip =
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1';
+
+  if (!checkRateLimit(ip)) {
+    const retryAfter = retryAfterSeconds(ip);
+    return NextResponse.json(
+      {
+        error: 'RATE_LIMITED',
+        message: "Whoa, easy on the requests there. Wait a minute and try again.",
+        traceId,
+      },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(retryAfter) },
+      }
+    );
+  }
+
+  // --- Parse + validate request body (Task 1C.1) ---
+  let body: ChatRequest;
+  try {
+    const raw = await req.json();
+    const parsed = ChatRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: 'VALIDATION_ERROR',
+          message: 'Invalid request body.',
+          details: parsed.error.flatten().fieldErrors,
+          traceId,
+        },
+        { status: 400 }
+      );
+    }
+    body = parsed.data;
+  } catch {
+    return NextResponse.json(
+      { error: 'VALIDATION_ERROR', message: 'Request body must be valid JSON.', traceId },
+      { status: 400 }
+    );
+  }
+
+  const { location_name, user_query, skill_level } = body;
+
+  try {
+    // --- Step 1: Geocode ---
+    let t = Date.now();
+    logStep({ traceId, step: 1, label: 'geocoding_start', spot: location_name });
+
+    const coords = await geocodeLocation(location_name);
+
+    logStep({
+      traceId,
+      step: 1,
+      label: 'geocoding_done',
+      spot: location_name,
+      duration_ms: Date.now() - t,
+      meta: { resolved: coords?.name ?? null },
+    });
+
+    if (!coords) {
+      return errorResponse('GEOCODING_FAILED', 200, traceId);
+    }
+
+    // --- Step 2: Fetch marine data ---
+    t = Date.now();
+    logStep({ traceId, step: 2, label: 'forecast_fetch_start', spot: coords.name });
+
+    const marineData = await fetchMarineData(coords.latitude, coords.longitude);
+
+    logStep({
+      traceId,
+      step: 2,
+      label: 'forecast_fetch_done',
+      spot: coords.name,
+      duration_ms: Date.now() - t,
+      meta: { dataReceived: marineData !== null },
+    });
+
+    if (!marineData) {
+      return errorResponse('FORECAST_FAILED', 200, traceId);
+    }
+
+    // --- Step 3: Compute deterministic stats ---
+    // condition_rating, condition_color, surf_height_human, wind_trend, wetsuit_rec, board_rec
+    // are derived from the raw forecast data — no LLM needed for these.
+    // See src/tools/compute_stats.ts for thresholds and rationale.
+    const aiStats = computeStats(marineData.current, skill_level);
+
+    // --- Step 4: Call Gemini for the narrative report only ---
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      logError({ traceId, step: 4, label: 'missing_api_key', error: 'GEMINI_API_KEY not set' });
+      return NextResponse.json(
+        { error: 'SERVER_CONFIG_ERROR', message: 'Server configuration error.', traceId },
+        { status: 500 }
+      );
+    }
+
+    t = Date.now();
+    logStep({ traceId, step: 4, label: 'llm_call_start', spot: coords.name });
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    // Gemini only writes the narrative — all numeric stats are already computed.
+    // tide_trend is intentionally absent (Task 1C.2): real tide data in Phase 2B.
+    const systemPrompt = `
+You are an expert local Surf Guide. You know everything about surfing, global surf spots (including secret ones), and local conditions.
+You are a top specialist in Portugal, specifically the Algarve region (e.g., Sagres, Lagos, Arrifana), and you know all the secret spots there.
+Your tone is authentic, experienced, local surfer.
+
+CRITICAL PORTUGAL RULES:
+- If the user asks for a spot in Portugal (especially the Algarve/Sagres), actively suggest and compare other spots within a 15–20 minute drive.
+- Consider both West Coast spots (Praia do Telheiro, Ponta Ruiva, Tonel) which pick up more swell, and South Coast spots (Barranco, Mareta, Zavial) which are more sheltered.
+
+REPORTING RULES:
+- NEVER hallucinate the forecast. ONLY use the API data provided below.
+- Write in clean Markdown. Use headers, bullet points where they add clarity.
+- Be honest: if it's flat, say flat; if it's blown out, say blown out.
+- Respect regional units: Feet/Knots for USA/Hawaii; Meters/KMH for Europe/Australia.
+- Target audience: ${skill_level} surfer. Calibrate your recommendation accordingly.
+- Output ONLY the report text — no JSON, no code fences, no preamble.
+
+API DATA:
+Location: ${coords.name} (${coords.latitude}, ${coords.longitude})
+
+CURRENT CONDITIONS:
+${JSON.stringify(marineData.current, null, 2)}
+
+48-HOUR FORECAST (3-hour increments):
 ${JSON.stringify(marineData.forecast_48h, null, 2)}
 
-USER QUERY:
-"${user_query}"
+USER QUERY: "${user_query}"
 `;
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: systemPrompt,
-            config: {
-                // Ensure Gemini responds in strict JSON
-                responseMimeType: "application/json",
-            }
-        });
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: systemPrompt,
+    });
 
-        let aiOutput;
-        try {
-            aiOutput = JSON.parse(response.text || '{}');
-        } catch (e) {
-            console.error("Failed to parse Gemini JSON:", response.text);
-            aiOutput = {
-                forecast_report: "I'm lost for words right now... something went wrong with the AI structure.",
-                condition_rating: "UNKNOWN",
-                condition_color: "#888888"
-            };
-        }
+    logStep({
+      traceId,
+      step: 4,
+      label: 'llm_call_done',
+      spot: coords.name,
+      duration_ms: Date.now() - t,
+    });
 
-        // Step 4: Return Payload
-        return NextResponse.json({
-            forecast_report: aiOutput.forecast_report,
-            ai_stats: {
-                condition_rating: aiOutput.condition_rating,
-                condition_color: aiOutput.condition_color,
-                surf_height_human: aiOutput.surf_height_human,
-                tide_trend: aiOutput.tide_trend,
-                wind_trend: aiOutput.wind_trend,
-                wetsuit_rec: aiOutput.wetsuit_rec || "Standard wetsuit",
-                board_rec: aiOutput.board_rec || "Standard shortboard"
-            },
-            spot_info: {
-                name: coords.name,
-                coordinates: { lat: coords.latitude, lon: coords.longitude }
-            },
-            raw_data: marineData.current
-        });
-
-    } catch (error) {
-        console.error("Chat API Route Error:", error);
-        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    const forecastReport = response.text?.trim() || '';
+    if (!forecastReport) {
+      logError({ traceId, step: 4, label: 'llm_empty_response', error: 'empty text' });
+      return errorResponse('LLM_FAILED', 200, traceId);
     }
+
+    // --- Step 5: Return payload ---
+    logStep({ traceId, step: 5, label: 'response_sent', spot: coords.name });
+
+    return NextResponse.json({
+      forecast_report: forecastReport,
+      ai_stats: aiStats,
+      spot_info: {
+        name: coords.name,
+        coordinates: { lat: coords.latitude, lon: coords.longitude },
+      },
+      raw_data: marineData.current,
+      traceId,
+    });
+  } catch (error) {
+    logError({ traceId, step: 0, label: 'unhandled_error', error });
+    return errorResponse('UNKNOWN', 500, traceId);
+  }
 }

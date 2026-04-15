@@ -1,6 +1,76 @@
 # Progress
 
-> **Note (2026-04-11):** Project handbook was upgraded. A new `CLAUDE.md` now holds developer conventions and parallel-session protocol; `task_plan.md` was rewritten into phased parallel tracks (A/B/C/D/E); `findings.md` was populated with API quirks, competitor intel, and known debts. New sessions should start by reading `CLAUDE.md` → `gemini.md` → `task_plan.md` → `findings.md`. No code changes in this pass.
+> **Note (2026-04-11):** Project handbook was upgraded. A new `CLAUDE.md` now holds developer conventions and parallel-session protocol; `task_plan.md` was rewritten into phased parallel tracks (A/B/C/D/E); `findings.md` was populated with API quirks, competitor intel, and known debts. No code changes in this pass.
+>
+> **Note (2026-04-13):** `gemini.md` and `architecture/` eliminated. Schemas, persona rules, and execution flow now live in `CLAUDE.md`. API reference and SOP content moved into `findings.md`. New sessions: read `CLAUDE.md` → `task_plan.md` → `findings.md`.
+
+## Current state — 2026-04-13 (start here next session)
+
+**Phase 1: COMPLETE.** All tracks 1A–1D done. App is truthful, hardened, and cleanly structured.
+
+**Phase 2: IN PROGRESS.** Completed so far:
+- 2D.1 ✅ In-memory LRU cache (`src/lib/cache.ts`)
+- 2C.1 ✅ Gazetteer seeded — 48 spots (`src/data/gazetteer.json`). Dominik to verify Algarve coords + add 2 spots to hit 50.
+- 2C.2 ✅ Nominatim adapter (`src/tools/geocode_nominatim.ts`)
+- 2C.3 ✅ Smart geocoding chain live — `geocodeLocation` now chains gazetteer → Nominatim → Gemini+cross-check
+- 2A.1 ✅ `ForecastSource` interface + `ForecastPoint` in `src/tools/forecast_sources/types.ts`
+- 2A.2 ✅ Open-Meteo adapter in `src/tools/forecast_sources/open_meteo.ts`
+
+**Ready to start next (all unblocked):**
+- **2A.3** — NOAA WaveWatch III adapter via Open-Meteo `&models=` param (no new API key). Can run parallel with 2D.2.
+- **2D.2** — Wire `withCache` into geocoder + forecast tools. Straightforward now.
+- **2C.4** — Beach facing direction from OSM Overpass API (feeds offshore/onshore logic in `compute_stats.ts`).
+
+**Blocked on user decision:**
+- **2B** (real tide data) — needs a provider decision (Stormglass or WorldTides) and an API key.
+
+**Typecheck:** `npx tsc --noEmit` — zero errors as of last session.
+
+---
+
+## Tracks 2C.3 + 2A.2 — 2026-04-13 (parallel)
+
+**2A.2 — Open-Meteo adapter:** Created `src/tools/forecast_sources/open_meteo.ts` with all fetch/parse logic (Zod schemas, unit converters, `ForecastPoint` assembly, `startIdx` sampling). Exports `fetchOpenMeteoData(lat, lon): Promise<MarineData | null>` and `openMeteoSource: ForecastSource`. `fetch_marine_data.ts` reduced to a thin wrapper delegating to `fetchOpenMeteoData` — public API unchanged so `route.ts` and `test_fetch.ts` need no changes. Moved `ForecastPoint` definition into `types.ts` to resolve a circular import that arose from `types.ts` previously re-importing it from `fetch_marine_data.ts`.
+
+**2C.3 — Smart geocoding chain:** Rewrote `geocoding.ts`. `geocodeLocation` now implements the full three-step chain: (1) gazetteer O(n) name+alias match, case-insensitive; (2) Nominatim via `geocodeNominatim`; (3) Gemini HTTP call with a Nominatim cross-check using haversine distance — rejects if Nominatim disagrees by >5km, logs a warning and accepts if Nominatim has no result (obscure break not in OSM). Mismatches logged to console for future gazetteer growth.
+
+**Typecheck:** `npx tsc --noEmit` — zero errors.
+
+---
+
+## Tracks 2C.2 + 2A.1 — 2026-04-13 (parallel)
+
+**2A.1 — Forecast source interface:** Created `webapp/src/tools/forecast_sources/types.ts`. Defines `ForecastSource { name: string; fetch(lat, lon): Promise<ForecastPoint[] | null> }`. Re-exports `ForecastPoint` for adapters. Normalization rules documented inline (metres, km/h, seconds, meteorological degrees, null not zero). Unblocks 2A.2 (Open-Meteo adapter) and 2A.3 (NOAA WaveWatch III adapter).
+
+**2C.2 — Nominatim adapter:** Created `webapp/src/tools/geocode_nominatim.ts`. `geocodeNominatim(query)` enforces 1-req/sec rate limit (module-level timestamp), sets descriptive `User-Agent` per OSM policy, caches results 24 h via `geocodeCache`. Zod-validates response array, rejects empty results and Null-Island. Returns `SpotCoordinates | null`. Ready to wire into the geocoding chain in Task 2C.3.
+
+**Typecheck:** `npx tsc --noEmit` — zero errors.
+
+---
+
+## Tracks 2C + 2D — 2026-04-13 (parallel)
+
+**2D.1 — In-memory LRU cache:** Created `webapp/src/lib/cache.ts`. Generic `LRUCache<T>` class using Map insertion order for LRU tracking, per-entry TTL. Two singletons: `forecastCache` (30-min TTL, 200 entries) and `geocodeCache` (24-h TTL, 500 entries). `withCache(cache, key, fn)` helper for cache-through. Wrapping the tools in `withCache` is Task 2D.2 (after forecast adapters exist).
+
+**2C.1 — Gazetteer seed (partial):** Created `webapp/src/data/gazetteer.json` with 48 spots. Covers all spots listed in the task plan plus additions: Nazaré, Praia Grande, Costa da Caparica (Portugal), Lacanau (France), G-Land + Desert Point + Cloud Break (Indo/Pacific), Teahupoo, Chicama, Puerto Escondido, Margaret River, Fistral, Thurso East, Bundoran, Anchor Point (Morocco), J-Bay. All fields populated: `id`, `name`, `aliases`, `lat`, `lon`, `country`, `region`, `type`, `best_swell_dir_deg`, `best_wind_dir_deg`, `skill_min`, `notes`. Coordinate caveats and the swell-direction-wrapping issue documented in `findings.md`. **Dominik to verify Portugal/Algarve coordinates and add 2 more spots to hit 50.**
+
+---
+
+## Track 1D — 2026-04-13
+
+**1D.1 — Remove fake tide box:** Replaced the `tide_trend` content with a "Tide data coming soon" italic placeholder. Removed `tide_trend` from the `AIStats` interface. Tide box kept in the grid so layout doesn't collapse.
+
+**1D.2 — Null handling in data cards:** Updated all `RawData` fields to `number | null`. Added a `fmt(val, suffix)` helper that returns "—" for null values and a formatted string otherwise. Applied to every numeric field in the surfline-clone block (height, swell, wind, direction, temp) and the board bar.
+
+**1D.3 — Error states:** Unified error rendering: API errors return `{ message: '...' }` in the persona voice (from 1C.3); network catch block now sets `message` instead of `error`. UI renders `response.message ?? response.error` with a new `error-state` CSS class (muted red). Loading spinner already covered the full request lifecycle.
+
+**1D.4 — UX fixes:** Added a clear (×) button on the location input, shown when the field is non-empty, `tabIndex={-1}` to keep tab flow intact. Tab order correct by DOM order. Enter-to-submit already worked via standard form behaviour.
+
+**Typecheck:** `npx tsc --noEmit` — zero errors.
+
+**Phase 1 is now complete.** All tracks (1A–1D) done.
+
+---
 
 ## Track 1B — 2026-04-13
 
@@ -35,6 +105,10 @@
 **Typecheck:** `npx tsc --noEmit` passes clean.
 
 ---
+
+## Track 1A — 2026-04-13 (update)
+
+**1A.1 (complete):** User rotated the Gemini API key. New key generated at Google AI Studio and placed in `.env.local`. Old key invalidated. Git history was clean (confirmed 2026-04-12 — key was never committed). Track 1A is now fully done.
 
 ## Track 1A — 2026-04-12
 

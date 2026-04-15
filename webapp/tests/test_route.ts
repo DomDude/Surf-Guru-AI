@@ -1,10 +1,11 @@
 import { POST } from "../src/app/api/chat/route";
+import { NextRequest } from "next/server";
 import * as dotenv from "dotenv";
 
 dotenv.config({ path: ".env.local" });
 
 async function run() {
-    const req = new Request("http://localhost/api/chat", {
+    const req = new NextRequest("http://localhost/api/chat", {
         method: "POST",
         body: JSON.stringify({ location_name: "Beliche" })
     });

@@ -4,25 +4,68 @@
 
 ---
 
-## Open-Meteo quirks
+## Open-Meteo API reference
+
+### Endpoints
+
+**Marine forecast** — `https://marine-api.open-meteo.com/v1/marine`  
+No authentication. Free for non-commercial use.
+
+Parameters used:
+- `latitude`, `longitude` (required)
+- `current=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction`
+- `hourly=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction`
+- `timezone=auto`
+
+**Weather forecast** — `https://api.open-meteo.com/v1/forecast`
+
+Parameters used:
+- `latitude`, `longitude` (required)
+- `current=wind_speed_10m,wind_direction_10m,temperature_2m`
+- `hourly=wind_speed_10m,wind_direction_10m,temperature_2m`
+- `timezone=auto`
+
+**Why two calls?** The marine endpoint does not reliably return wind. Never "optimize" by dropping the second call — it will silently remove all wind data.
+
+**Error codes:** `400` = invalid coordinates or parameter format. `429` = rate limit hit (rare in dev).
+
+### Open-Meteo quirks
 
 ### The "current conditions" trap [resolved]
 **Symptom.** `fetchMarineData` treated `hourly[0]` as "current conditions."
 **Reality.** With `timezone=auto`, Open-Meteo returns `hourly.time[0]` as **local midnight of today**, not "now." So your "current wave height" can be up to 24 hours stale.
-**Fix applied (1B.1).** Add `&current=wave_height,swell_wave_height,swell_wave_period,swell_wave_direction` to the marine URL and `&current=wind_speed_10m,wind_direction_10m,temperature_2m` to the weather URL. The API returns a `current` object with `{ time, interval, <fields> }` where `time` is the actual wall-clock time in the spot's local timezone. We now build `current: ForecastPoint` from that object.
-**Note.** `current.time` aligns to 15-minute intervals (Open-Meteo's native resolution). It is always ≤ now + 15 min. Correct.
+**Fix applied (1B.1).** Added `&current=…` to both URLs. The API returns a `current` object with `{ time, interval, <fields> }` where `time` is actual wall-clock time in the spot's local timezone. We now build `current: ForecastPoint` from that object.
+**Note.** `current.time` aligns to 15-minute intervals (Open-Meteo's native resolution). It is always ≤ now + 15 min.
 
 ### Sampling offset [resolved]
-Same root cause: `for (let i = 0; i < times.length; i += 3)` started at index 0 (= midnight). Fixed in 1B.3: a `startIdx` search finds the last hourly entry at or before `current.time` (lexicographic ISO-8601 comparison is safe because both strings share the same local timezone offset from `timezone=auto`).
+Same root cause: `for (let i = 0; i < times.length; i += 3)` started at index 0 (= midnight). Fixed in 1B.3: a `startIdx` search finds the last hourly entry at or before `current.time`. Lexicographic ISO-8601 comparison is safe because both strings share the same local timezone offset from `timezone=auto`.
 
 ### Missing data as zero [resolved]
-`wave_height[i] || 0` silently rendered nulls as flat water. Fixed in 1B.2: all `ForecastPoint` numeric fields are now `number | null`; converters propagate null; `?? null` is used throughout. The payload now honestly contains `null` for absent readings.
-
-### Marine API does not return wind
-`open-meteo.com/v1/marine` doesn't reliably include wind. You have to hit `api.open-meteo.com/v1/forecast` separately for `wind_speed_10m`, `wind_direction_10m`, `temperature_2m`. We already do this — documented here so nobody "optimizes" by dropping the second call.
+`wave_height[i] || 0` silently rendered nulls as flat water. Fixed in 1B.2: all `ForecastPoint` numeric fields are now `number | null`; converters propagate null; `?? null` is used throughout.
 
 ### Models parameter
 Open-Meteo supports `&models=gfs_wave025,ecmwf_wam025,ncep_gfs025,icon_seamless` on the marine endpoint. Use this to get a second independent forecast without paying for Stormglass. Relevant for Task 2A.3.
+
+---
+
+## compute_stats — deterministic surf stats
+
+`webapp/src/tools/compute_stats.ts` derives all display stats from the raw `ForecastPoint` — no LLM needed for these. This makes the stats consistent, testable, and provider-agnostic, and lets the LLM focus purely on narrative text.
+
+### What's computed deterministically
+- `condition_rating` (POOR/FAIR/GOOD/EPIC) — swell height + period, degraded by strong wind (>35 kmh)
+- `condition_color` — hardcoded hex per rating
+- `surf_height_human` — wave height in human language (ankle high → double overhead+)
+- `wind_trend` — compass direction label + strength (Light/Moderate/Fresh/Strong), e.g. "Moderate NW"
+- `wetsuit_rec` — from `temp_c` thresholds
+- `board_rec` — from wave height + skill level
+
+### What's NOT computed here (still LLM)
+- `forecast_report` — the full narrative markdown text. Gemini writes it as plain text; no JSON mode needed.
+- Offshore/onshore wind classification — requires knowing the beach's facing direction, which we don't have deterministically. `wind_trend` reports the compass direction + strength instead; the LLM narrative interprets offshore-ness contextually.
+
+### Threshold calibration needed
+Starting thresholds are conservative and reasonable but untuned. **Dominik should validate against known Algarve sessions** — e.g., a "GOOD" Tonel day, a blown-out Sagres, a flat summer south coast day — and adjust the swell height/period/wind boundaries in `compute_stats.ts`. Thresholds are clearly grouped at the top of the file.
 
 ---
 
@@ -32,26 +75,25 @@ Open-Meteo supports `&models=gfs_wave025,ecmwf_wam025,ncep_gfs025,icon_seamless`
 `responseMimeType: "application/json"` works well when set in `generationConfig`. Do **not** also tell Gemini to output ` ```json` blocks in the prompt — you'll get the raw JSON wrapped in markdown and have to strip it. We're clean on `route.ts` but `geocoding.ts:59` still has the defensive strip (harmless but unnecessary).
 
 ### Gemini as geocoder (current debt)
-`geocodeLocation` uses Gemini to return `{ name, lat, lon }`. It works surprisingly well for well-known spots (Pipeline, Teahupoo, Supertubos) but has **zero verification**, so we've seen it:
+`geocodeLocation` uses Gemini to return `{ name, lat, lon }`. It works surprisingly well for well-known spots (Pipeline, Teahupoo, Supertubos) but has **limited verification**, so we've seen it:
 - Return coordinates off by 5–20 km for Algarve spots
 - Confidently geocode fictitious places
-- Return (0, 0) once for an unknown input
 
-**Mitigation plan.** Phase 2 adds (1) a hand-verified gazetteer as the primary source, (2) Nominatim fallback, (3) Gemini as last-resort with Nominatim cross-check. See Tasks 2C.1–2C.3.
+**Mitigation in place (1B.5).** `GeocodeResponseSchema` validates lat ∈ [-90,90], lon ∈ [-180,180] and rejects the `(0,0)` Null-Island fallback. Invalid results return `null` with a logged Zod error.
 
-### Gemini will happily invent tide data
-`route.ts:80` literally instructs Gemini to "use your local knowledge to estimate a realistic tide stage." This violates `gemini.md` Rule #1 (no hallucinated forecasts) and produces plausible-sounding but wrong tide times. Plan: remove in Task 1C.2, replace with a real tide API in Phase 2B.
+**Full fix plan.** Phase 2 adds (1) a hand-verified gazetteer as the primary source, (2) Nominatim fallback, (3) Gemini as last-resort with Nominatim cross-check. See Tasks 2C.1–2C.3.
+
+### Gemini will happily invent tide data [resolved]
+`route.ts` previously instructed Gemini to "use your local knowledge to estimate a realistic tide stage." This violates Rule #1 (no hallucinated forecasts). Removed `tide_trend` entirely from the output schema and payload (Task 1C.2, 2026-04-13). Real tide data scheduled for Phase 2B.
 
 ### Regional units via location string
-The system prompt tells Gemini "Feet/Knots for USA/Hawaii, Meters/KMH for Europe/Australia" and asks it to infer the region from the location name. This mostly works but fails on ambiguous names (there's a "Pipeline" in Australia too). Better approach: derive the unit system from the returned coordinates server-side before composing the prompt. Deferred to Phase 2.
+The system prompt tells Gemini to infer the unit system from the location name. This mostly works but fails on ambiguous names (there's a "Pipeline" in Australia too). Better approach: derive the unit system from the returned coordinates server-side before composing the prompt. Deferred to Phase 2.
 
 ---
 
 ## Violations caught and fixed
 
-*(Append as we fix them. Record the rule, how it was violated, and how we fixed it.)*
-
-- **Hallucinated tide times [resolved].** Rule #1 violation — `route.ts` system prompt instructed Gemini to "use your local knowledge to estimate a realistic tide stage." Removed `tide_trend` entirely from the Gemini output schema and from the API payload (Task 1C.2, 2026-04-13). Real tide data scheduled for Phase 2B via a dedicated API.
+- **Hallucinated tide times [resolved].** Rule #1 violation — `route.ts` system prompt instructed Gemini to estimate tide stage. Removed `tide_trend` from the Gemini output schema and from the API payload (Task 1C.2, 2026-04-13). Real tide data scheduled for Phase 2B via a dedicated API.
 - **"Current" reading is actually midnight [resolved].** Violates implicit truthfulness of the `raw_data` block. Fixed in Task 1B.1 (2026-04-13) — switched to the Open-Meteo `current` object; `current.time` now matches real wall-clock time.
 
 ---
@@ -82,7 +124,7 @@ The system prompt tells Gemini "Feet/Knots for USA/Hawaii, Meters/KMH for Europe
 4. **Multi-model ensemble + agreement score** (Swellinfo-style, but global).
 5. **Natural-language AI surf guide** that actually reasons (not just a prompt with pasted JSON).
 6. **Local-knowledge ingestion** — Reddit, Wannasurf, YouTube — nothing else does this.
-7. **Personalized stoke score** after ≥5 sessions, like BUIO but without forcing manual logging first (use session view as implicit signal).
+7. **Personalized stoke score** after ≥5 sessions, like BUIO but without forcing manual logging first.
 
 ### Monetization reference
 Surfline podcast interview (Paul Ganev): they don't spend on paid acquisition. Free tier is the growth funnel, subscription for committed users. Target conversion for good freemium apps: 3–5%. Excellent: 6–8%. Hard paywalls convert ~6× better but attract ~10× fewer users. We go freemium, with a Pro tier at maybe 3–5€/mo (undercuts Surfline ~6×) for alerts, region ranker, session history beyond 30 days, multi-spot compare.
@@ -91,7 +133,7 @@ Surfline podcast interview (Paul Ganev): they don't spend on paid acquisition. F
 
 ## Forecast source normalization (planning notes for Phase 2)
 
-Each forecast source returns its own shape. We'll normalize to `ForecastPoint[]` from `fetch_marine_data.ts`. The interface for all sources:
+Each forecast source returns its own shape. We'll normalize to `ForecastPoint[]`. The interface for all sources:
 
 ```ts
 interface ForecastSource {
@@ -111,37 +153,73 @@ interface ForecastSource {
 Normalize to 3-hour increments over 48h starting from "now", aligned to the nearest past 3h boundary so the first point is always ≤ now + 3h.
 
 ### Agreement score
-`agreement(t) = 1 - clamp(stddev(sources_wave_height_at_t) / mean(sources_wave_height_at_t), 0, 1)`.
+`agreement(t) = 1 - clamp(stddev(sources_wave_height_at_t) / mean(sources_wave_height_at_t), 0, 1)`
 - 1.0 = perfect agreement → high confidence
 - < 0.5 = meaningful disagreement → show both and let the surfer decide
 
 ---
 
+## Spot metadata sources
+
+### Beach facing direction — OSM Overpass API (free, computational)
+Beach facing direction (`facing_deg`) can be derived automatically from OpenStreetMap coastline geometry. Query the Overpass API for `natural=coastline` ways within ~500m of the spot coordinates, find the nearest segment, and compute its perpendicular. No scraping, no surf-site dependency.
+- Endpoint: `https://overpass-api.de/api/interpreter`
+- No auth required. Rate-limit to 1 req/s (usage policy).
+- This is the key input for offshore/onshore wind classification in `compute_stats.ts` and the stoke score (Task 3B.1). Without it, wind direction is reported as a compass label only.
+- Task: 2C.4
+
+### Optimal swell/wind windows — Wannasurf + surf-forecast.com (one-off scrape)
+Both sites have per-spot pages with structured optimal swell direction, optimal wind direction, and sometimes optimal tide stage. Scrape once at gazetteer-seed time and cache in `gazetteer.json`.
+- Wannasurf: `https://www.wannasurf.com/spot/<slug>/` — has "optimal swell" and "optimal wind" fields in the spot sidebar.
+- surf-forecast.com: `https://www.surf-forecast.com/breaks/<slug>/forecasts/latest/six_day` — spot info tab has direction windows.
+- Respect `robots.txt` on both. Use a descriptive `User-Agent` (e.g. `SurfGuruAI/1.0 (non-commercial research)`).
+- **Do not scrape Surfline** — their ToS explicitly prohibits it. Their data is also paywalled.
+- For Algarve spots specifically, Dominik's ground-truth knowledge is more reliable than any scraped value. Use scraped values as a starting point, verify manually.
+- Task: 2C.5
+
+### What still needs human input (no source replaces this)
+- `topography_notes` per spot — "wraps from WNW behind the headland, loses 30% of swell height" — this level of local knowledge is not structured anywhere online. Must be written by someone who has surfed the spot. Dominik owns the Algarve entries. Task: 3D.1.
+
+---
+
+## Gazetteer notes
+
+### Coordinate accuracy
+The 48-spot seed in `webapp/src/data/gazetteer.json` was compiled from known geography. Coordinates are accurate to ~0.01° for well-known WSL/CT spots (Pipeline, J-Bay, Supertubos, etc.) and ~0.1° for remote spots (Mentawais, G-Land). Error at 0.1° is ~10km — acceptable for calling the Open-Meteo grid but could put you on the wrong side of an island in the Mentawais. **Dominik should verify and correct all Algarve/Portugal entries** since he surfs there; the coords for Beliche, Telheiro, Castelejo, Tonel, etc. need field confirmation.
+
+### Swell direction wrapping
+`best_swell_dir_deg` is stored as `[min, max]` with min < max. This works for most spots but breaks for spots whose optimal window straddles 360°/0° (e.g. a spot needing 340–20° would need `[340, 20]`, which is illogical as a range). The current gazetteer avoids this by using `[315, 30]` as `[315, 360]` and capturing the wrap imprecisely. The stoke formula in Task 3B.1 should normalize to a circular comparison: `abs((actual - midpoint + 180) % 360 - 180) < window/2`.
+
+### Spots flagged for coordinate verification
+- Mentawais (Macaronis, Lance's Right) — remote, GPS-only territory, ±5km possible
+- G-Land — SE Java tip, ±2km possible
+- Thurso East — approximate river mouth position
+- Cloud Break (Fiji) — ~1km W of Tavarua island, confirm via OSM
+
+---
+
 ## Known debts (shortcuts we're carrying)
 
-| # | Debt | Where | Cost if ignored | Scheduled fix |
-|---|---|---|---|---|
-| 1 | "Current" reading is midnight-local, not now | `fetch_marine_data.ts:72` | All "current" readings silently wrong | 1B.1 |
-| 2 | Tide data fabricated by LLM | `route.ts:80` | Rule #1 violation, wrong tide times | 1C.2 + 2B |
-| 3 | Geocoder has no verification | `geocoding.ts` | Wrong coordinates → wrong forecast | 2C.3 |
-| 4 | `|| 0` hides null forecast data | `fetch_marine_data.ts:50-67` | Shows flat ocean where data is missing | 1B.2 |
-| 5 | No Zod validation anywhere | all tools | One Open-Meteo schema change crashes prod | 1B.4, 1C.1 |
-| 6 | No caching | all tools | Expensive + slow + burns rate limits | 2D |
-| 7 | No rate limiting on `/api/chat` | `route.ts` | $$$ abuse risk if deployed | 1C.5 → 5C |
-| 8 | Ad-hoc test scripts in `src/` | `webapp/src/tools/test_*.ts`, `webapp/test_route.ts` | Pollutes build, confuses imports | 1A.5 |
-| 9 | Default `create-next-app` metadata and README | `layout.tsx`, `README.md` | Unprofessional on share/embed | 1A.3, 1A.4 |
-| 10 | Regional units via LLM inference, not coordinates | `route.ts` system prompt | Wrong units for ambiguous spot names | Phase 2 |
-| 11 | No gitignore at project root (only inside `webapp/`) | — | `.env` / `.DS_Store` at root could leak | 1A.2 |
-| 12 | Two sources of truth for "tools": `architecture/blueprint.md` references `tools/` but code lives in `webapp/src/tools/` | docs | Confusing for new sessions | 1A.6 |
+| # | Debt | Where | Cost if ignored | Scheduled fix | Status |
+|---|---|---|---|---|---|
+| 1 | "Current" reading was midnight-local | `fetch_marine_data.ts` | Stale "current" readings | 1B.1 | [resolved] |
+| 2 | Tide data fabricated by LLM | `route.ts` | Rule #1 violation | 1C.2 + 2B | 1C.2 [resolved], 2B pending |
+| 3 | Geocoder has no cross-check | `geocoding.ts` | Wrong coordinates → wrong forecast | 2C.3 | open |
+| 4 | `\|\| 0` hid null forecast data | `fetch_marine_data.ts` | Shows flat ocean where data is missing | 1B.2 | [resolved] |
+| 5 | No Zod validation | all tools | One API schema change crashes prod | 1B.4, 1C.1 | [resolved] |
+| 6 | No caching | all tools | Expensive + slow + burns rate limits | 2D | open |
+| 7 | No rate limiting on `/api/chat` | `route.ts` | $$$ abuse risk if deployed | 1C.5 | [resolved] |
+| 8 | Test scripts in `src/tools/` | `webapp/src/tools/test_*.ts` | Pollutes build | 1A.5 | [resolved] |
+| 9 | Default create-next-app metadata | `layout.tsx`, `README.md` | Unprofessional on share/embed | 1A.3, 1A.4 | [resolved] |
+| 10 | Regional units via LLM inference | `route.ts` system prompt | Wrong units for ambiguous spot names | Phase 2 | open |
+| 11 | No gitignore at project root | — | `.env` / `.DS_Store` at root could leak | 1A.2 | [resolved] |
 
 ---
 
 ## Parallel-session lessons (update as we learn)
 
-*(Empty for now. Add here when we discover what works and what doesn't.)*
-
-- *(placeholder)* If two sessions ever need the same file, the second one should stop and surface it — don't try to merge blind.
-- *(placeholder)* Small commits > big commits when parallel work is happening.
+- If two sessions ever need the same file, the second one should stop and surface it — don't try to merge blind.
+- Small commits > big commits when parallel work is happening.
 
 ---
 
@@ -158,11 +236,10 @@ Normalize to 3-hour increments over 48h starting from "now", aligned to the near
 
 ---
 
-## Glossary (for future-you or a new contributor)
+## Glossary
 
 - **Stoke score** — 0–100 rating of how good it'll be at a spot at a given time, personalized to the user's skill and history. Our signature output.
 - **Model agreement** — 0–1 score of how much the multiple forecast sources agree. High agreement = confident prediction.
 - **Gazetteer** — hand-verified JSON of surf spots with coordinates, type, best swell/wind direction, skill minimum, and topography notes. The backbone of our regional knowledge.
-- **A.N.T.** — the 3-layer architecture (Architecture / Navigation / Tools) documented in `gemini.md` and `architecture/blueprint.md`.
-- **B.L.A.S.T.** — the 5-phase delivery protocol from `task_plan.md` (Blueprint / Link / Architect / Stylize / Trigger). Phases map roughly to Phases 1→5 of the current plan.
-- **Topography-aware** — our term for LLM reasoning over gazetteer `topography_notes` to interpret raw forecasts. Not a physics model.
+- **A.N.T.** — the 3-layer architecture (Architecture / Navigation / Tools): Layer 1 = LLM reasoning, Layer 2 = `route.ts` orchestration, Layer 3 = deterministic tools.
+- **Topography-aware** — LLM reasoning over gazetteer `topography_notes` to interpret raw forecasts. Not a physics model.
